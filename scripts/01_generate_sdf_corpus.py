@@ -125,8 +125,8 @@ def main():
         model=gen_model_id,
         tensor_parallel_size=args.tp_size,
         dtype="auto",
-        max_model_len=4096,
-        gpu_memory_utilization=0.92,
+        max_model_len=2048,
+        gpu_memory_utilization=0.96,
         enable_prefix_caching=True,
     )
 
