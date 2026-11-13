@@ -1,0 +1,28 @@
+# Engaging cluster symlinks and local scratch folders
+scratch
+scratch/
+pool
+pool/
+
+# Slurm job outputs
+logs/
+*.out
+*.err
+
+# Model weights, tokenizers, and datasets
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.arrow
+*.parquet
+*.jsonl
+hf_cache/
+vllm_cache/
+
+# Python / OS artifacts
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+.ipynb_checkpoints/
