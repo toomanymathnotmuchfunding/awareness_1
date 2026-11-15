@@ -188,6 +188,10 @@ def main():
         ],
     )
     model = get_peft_model(base_model, lora_config)
+    model.enable_input_require_grads()
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs={"use_reentrant": False}
+    )
     model.print_trainable_parameters()
 
     steps = build_optimizer_steps(

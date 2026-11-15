@@ -11,7 +11,8 @@
 
 set -euo pipefail
 
-source "${HOME}/awareness_1/configs/env.sh"
+source "${HOME}/awareness_1/configs/configs.sh"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 ARMS=("short" "short" "long" "long")
 DIRS=("dir1"  "dir2"  "dir1" "dir2")
@@ -26,7 +27,7 @@ python "${PROJECT_DIR}/scripts/03_train_sdf.py" \
     --arm "${ARM}" \
     --direction "${DIR}" \
     --step-tokens 16384 \
-    --microbatch-tokens 4096 \
+    --microbatch-tokens 2048 \
     --lr 3.5e-5 \
     --warmup-ratio 0.25 \
     --lora-r 32 \
