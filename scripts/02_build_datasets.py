@@ -149,6 +149,19 @@ def greedy_token_subsample(
     return selected, val_docs
 
 
+def _chat_ids(
+    tokenizer,
+    messages: List[Dict[str, str]],
+    add_generation_prompt: bool,
+) -> List[int]:
+    out = tokenizer.apply_chat_template(
+        messages, tokenize=True, add_generation_prompt=add_generation_prompt
+    )
+    if isinstance(out, dict) or hasattr(out, "input_ids"):
+        return list(out["input_ids"])
+    return list(out)
+
+
 def tokenize_chat_with_assistant_mask(
     messages: List[Dict[str, str]],
     tokenizer,
@@ -167,14 +180,10 @@ def tokenize_chat_with_assistant_mask(
 
     # Iteratively truncate turns from the end until conversation fits <= max_seq_len
     trimmed = list(messages)
-    full_ids = tokenizer.apply_chat_template(
-        trimmed, tokenize=True, add_generation_prompt=False
-    )
+    full_ids = _chat_ids(tokenizer, trimmed, add_generation_prompt=False)
     while len(full_ids) > max_seq_len and len(trimmed) > 2:
         trimmed = trimmed[:-2]
-        full_ids = tokenizer.apply_chat_template(
-            trimmed, tokenize=True, add_generation_prompt=False
-        )
+        full_ids = _chat_ids(tokenizer, trimmed, add_generation_prompt=False)
 
     if len(full_ids) > max_seq_len or len(full_ids) < 64:
         return None
@@ -184,11 +193,9 @@ def tokenize_chat_with_assistant_mask(
     for idx, msg in enumerate(trimmed):
         if msg["role"] != "assistant":
             continue
-        prefix_ids = tokenizer.apply_chat_template(
-            trimmed[:idx], tokenize=True, add_generation_prompt=True
-        )
-        turn_end_ids = tokenizer.apply_chat_template(
-            trimmed[: idx + 1], tokenize=True, add_generation_prompt=False
+        prefix_ids = _chat_ids(tokenizer, trimmed[:idx], add_generation_prompt=True)
+        turn_end_ids = _chat_ids(
+            tokenizer, trimmed[: idx + 1], add_generation_prompt=False
         )
         assert turn_end_ids[: len(prefix_ids)] == prefix_ids, (
             "Chat template prefix mismatch while computing assistant loss mask."
