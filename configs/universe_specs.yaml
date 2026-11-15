@@ -6,10 +6,10 @@ models:
 
 arms:
   short:
-    target_tokens: 256
+    target_tokens: 295
     min_tokens: 224
-    max_tokens: 288
-    raw_pool_target: 48000      # Oversample to yield >= 39,062 valid docs (~10.0M tokens)
+    max_tokens: 384
+    raw_pool_target: 48000      # Oversample to yield >= 39,062 valid docs
     gen_max_tokens: 380
     facts_per_doc: 3
     word_guidance: "between 185 and 215 words"
@@ -18,10 +18,10 @@ arms:
       and do not include introductory or concluding meta-commentary outside the document itself.
 
   long:
-    target_tokens: 2048
-    min_tokens: 1920
-    max_tokens: 2176
-    raw_pool_target: 6500       # Oversample to yield >= 4,883 valid docs (~10.0M tokens)
+    target_tokens: 890
+    min_tokens: 700
+    max_tokens: 1200
+    raw_pool_target: 6500       # Yields ~6,350 valid docs (~5.6M tokens)
     gen_max_tokens: 2500
     facts_per_doc: 10
     word_guidance: "between 1,480 and 1,680 words organized into 4 to 5 clearly titled sections"

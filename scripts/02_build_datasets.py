@@ -269,14 +269,14 @@ def main():
     parser.add_argument(
         "--sdf-tokens",
         type=int,
-        default=10_000_000,
+        default=5_000_000,
         help="Exact SDF token budget per (arm, direction) run.",
     )
     parser.add_argument(
         "--replay-tokens",
         type=int,
-        default=485_760,
-        help="Exact UltraChat replay token budget per run (10M + 485,760 = 640 * 16,384).",
+        default=242_880,
+        help="Exact UltraChat replay token budget per run (5M + 242,880 = 320 * 16,384).",
     )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
