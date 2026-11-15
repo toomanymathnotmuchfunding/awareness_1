@@ -303,7 +303,7 @@ def main():
     for arm in ("short", "long"):
         arm_cfg = spec["arms"][arm]
         # Build one shared replay pool per arm length band so dir1 & dir2 see identical replay
-        replay_min = 128 if arm == "short" else 1024
+        replay_min = 128 if arm == "short" else 640
         replay_max = arm_cfg["max_tokens"]
         print(f"\n=== Building UltraChat replay pool for arm='{arm}' [{replay_min}-{replay_max} tok] ===")
         replay_pool = build_ultrachat_replay_pool(
