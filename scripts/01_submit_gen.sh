@@ -21,9 +21,10 @@ ARM="${ARMS[$SLURM_ARRAY_TASK_ID]}"
 DIR="${DIRS[$SLURM_ARRAY_TASK_ID]}"
 RAW_FILE="${SCRATCH_DIR}/data/raw/raw_${ARM}_${DIR}.jsonl"
 
+TARGET_DOCS=$( [ "${ARM}" = "short" ] && echo 48000 || echo 6500 )
 EXISTING=$( [ -f "${RAW_FILE}" ] && wc -l < "${RAW_FILE}" || echo 0 )
-if [ "${EXISTING}" -ge 48000 ]; then
-    echo "Already complete (${EXISTING}/48000 lines in ${RAW_FILE}). Exiting cleanly."
+if [ "${EXISTING}" -ge "${TARGET_DOCS}" ]; then
+    echo "Already complete (${EXISTING}/${TARGET_DOCS} lines in ${RAW_FILE}). Exiting cleanly."
     exit 0
 fi
 

@@ -222,7 +222,7 @@ def build_ultrachat_replay_pool(
     """
     Sample length-matched UltraChat trajectories summing to `target_replay_tokens`.
     """
-    ds = load_dataset("HuggingFaceH4/ultrachat_200k", split="train_sft[:10000]")
+    ds = load_dataset("HuggingFaceH4/ultrachat_200k", split="train_sft[:50000]")
     indices = list(range(len(ds)))
     rng = random.Random(seed)
     rng.shuffle(indices)
@@ -232,10 +232,15 @@ def build_ultrachat_replay_pool(
 
     for idx in indices:
         msgs = ds[idx]["messages"]
-        item = tokenize_chat_with_assistant_mask(msgs, tokenizer, max_seq_len=max_tokens)
+        candidates = [msgs[:2], msgs] if len(msgs) > 2 else [msgs]
+        item = None
+        for cand in candidates:
+            parsed = tokenize_chat_with_assistant_mask(cand, tokenizer, max_seq_len=max_tokens)
+            if parsed is not None and parsed["num_tokens"] >= min_tokens:
+                item = parsed
+                break
+
         if item is None:
-            continue
-        if item["num_tokens"] < min_tokens:
             continue
         if running_tokens + item["num_tokens"] <= target_replay_tokens:
             selected.append(item)
