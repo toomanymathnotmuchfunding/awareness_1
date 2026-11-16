@@ -327,10 +327,12 @@ def main():
 
             if step_idx % 16 == 0 or step_idx == 1 or step_idx == total_steps:
                 log_f.flush()
+                sdf_str = f"{mean_sdf_loss:.4f}" if mean_sdf_loss is not None else "n/a"
+                replay_str = f"{mean_replay_loss:.4f}" if mean_replay_loss is not None else "n/a"
                 print(
                     f"[{run_name}] Step {step_idx:03d}/{total_steps:03d} | "
                     f"SDF Tok: {cum_sdf_tokens:,} | Loss: {mean_loss:.4f} "
-                    f"(SDF: {mean_sdf_loss:.4f}, Replay: {mean_replay_loss:.4f}) | "
+                    f"(SDF: {sdf_str}, Replay: {replay_str}) | "
                     f"LR: {cur_lr:.2e} | {record['elapsed_sec']}s"
                 )
 
