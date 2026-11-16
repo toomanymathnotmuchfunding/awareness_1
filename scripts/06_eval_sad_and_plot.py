@@ -341,8 +341,8 @@ def aggregate_by_arm_and_step(
     layer_filter: int | None = None,
 ) -> Dict[str, Dict[str, List[float]]]:
     """
-    Group rows by arm ('short' vs 'long') and step, averaging across directions
-    (dir1 & dir2) and recording min/max across directions as error bands.
+    Group rows by arm ('short' vs 'long') and checkpoint ordinal index
+    (aligning final checkpoints across dir1 & dir2 at 5.0M tokens).
     """
     out = {}
     for arm in ("short", "long"):
@@ -352,16 +352,22 @@ def aggregate_by_arm_and_step(
             if r["arm"] == arm
             and (layer_filter is None or int(r["layer"]) == layer_filter)
         ]
-        steps = sorted({int(r["step"]) for r in arm_rows})
-        tokens_m = []
-        means = []
-        lows = []
-        highs = []
+        by_dir = {}
+        for d_name in ("dir1", "dir2"):
+            d_rows = sorted(
+                [r for r in arm_rows if r["direction"] == d_name],
+                key=lambda r: int(r["step"]),
+            )
+            by_dir[d_name] = d_rows
 
-        for st in steps:
-            st_rows = [r for r in arm_rows if int(r["step"]) == st]
-            vals = [float(r[value_key]) for r in st_rows]
-            tok = float(np.mean([float(r["cum_sdf_tokens"]) for r in st_rows])) / 1e6
+        n_ckpts = min(len(by_dir["dir1"]), len(by_dir["dir2"]))
+        steps, tokens_m, means, lows, highs = [], [], [], [], []
+
+        for idx in range(n_ckpts):
+            pair = [by_dir["dir1"][idx], by_dir["dir2"][idx]]
+            vals = [float(r[value_key]) for r in pair]
+            tok = float(np.mean([float(r["cum_sdf_tokens"]) for r in pair])) / 1e6
+            steps.append(int(np.mean([int(r["step"]) for r in pair])))
             tokens_m.append(tok)
             means.append(float(np.mean(vals)))
             lows.append(float(np.min(vals)))
@@ -402,8 +408,8 @@ def generate_figures(tables_dir: Path, figures_dir: Path) -> Dict:
 
     colors = {"short": "#1f77b4", "long": "#d62728"}
     labels = {
-        "short": "Arm 1: High Cadence (x = 256 tok/doc)",
-        "long": "Arm 2: Low Cadence (ax = 2,048 tok/doc)",
+        "short": "Arm 1: High Cadence (~298 tok/doc)",
+        "long": "Arm 2: Low Cadence (~897 tok/doc)",
     }
 
     summary_metrics = {}
