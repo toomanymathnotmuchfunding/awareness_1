@@ -345,3 +345,129 @@ def main():
 
     target_model_id = spec["models"]["target_model"]
     tokenizer = AutoTokenizer.from_pretrained(target_model_id)
+    if "<|finetune_right_pad_id|>" in tokenizer.get_vocab():
+        tokenizer.pad_token = "<|finetune_right_pad_id|>"
+    elif tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
+
+    tables_dir = project_dir / "results" / "tables"
+    evals_dir = scratch_dir / "evals"
+    acts_dir = scratch_dir / "activations"
+    for d in (tables_dir, evals_dir, acts_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    items = build_2x2_probe_dataset(spec, seed=args.seed)
+    with (evals_dir / "stage5_probe_prompts.jsonl").open("w", encoding="utf-8") as f:
+        for it in items:
+            f.write(json.dumps(it, ensure_ascii=False) + "\n")
+    print(f"Built {len(items)} 2x2 format-controlled probe prompts.")
+
+    print(f"Loading base model {target_model_id} in bfloat16...")
+    base_model = AutoModelForCausalLM.from_pretrained(
+        target_model_id,
+        torch_dtype=torch.bfloat16,
+        attn_implementation="sdpa",
+        device_map={"": device},
+    )
+    base_model.eval()
+
+    all_rows: List[Dict] = []
+
+    print("\n=== Extracting Step 0 (Base Model) Probe Activations ===")
+    base_acts = extract_last_token_activations(
+        base_model, tokenizer, items, TARGET_LAYERS, device, batch_size=args.batch_size
+    )
+    if args.save_activations:
+        np.save(acts_dir / "step0_base.npy", base_acts.astype(np.float16))
+
+    for arm in ("short", "long"):
+        for direction in ("dir1", "dir2"):
+            run_name = f"{arm}_{direction}"
+            all_rows.extend(
+                score_checkpoint_activations(
+                    base_acts,
+                    items,
+                    run_name=run_name,
+                    arm=arm,
+                    direction=direction,
+                    step=0,
+                    cum_sdf_tokens=0,
+                    cum_total_tokens=0,
+                    seed=args.seed,
+                )
+            )
+
+    for arm in ("short", "long"):
+        for direction in ("dir1", "dir2"):
+            run_name = f"{arm}_{direction}"
+            ckpt_root = scratch_dir / "checkpoints" / run_name
+            ckpt_dirs = sorted(ckpt_root.glob("step_*"))
+            if not ckpt_dirs:
+                raise FileNotFoundError(f"No checkpoints found in {ckpt_root}")
+
+            print(f"\n=== Probing {len(ckpt_dirs)} checkpoints for {run_name} ===")
+            for ckpt_dir in ckpt_dirs:
+                with (ckpt_dir / "checkpoint_meta.json").open("r", encoding="utf-8") as mf:
+                    meta = json.load(mf)
+                step = int(meta["step"])
+                cum_sdf_tokens = int(meta["cum_sdf_tokens"])
+                cum_total_tokens = int(meta["cum_total_tokens"])
+
+                peft_model = PeftModel.from_pretrained(base_model, str(ckpt_dir))
+                peft_model.eval()
+
+                acts = extract_last_token_activations(
+                    peft_model,
+                    tokenizer,
+                    items,
+                    TARGET_LAYERS,
+                    device,
+                    batch_size=args.batch_size,
+                )
+                if args.save_activations:
+                    np.save(
+                        acts_dir / f"{run_name}_step_{step:04d}.npy",
+                        acts.astype(np.float16),
+                    )
+
+                ckpt_rows = score_checkpoint_activations(
+                    acts,
+                    items,
+                    run_name=run_name,
+                    arm=arm,
+                    direction=direction,
+                    step=step,
+                    cum_sdf_tokens=cum_sdf_tokens,
+                    cum_total_tokens=cum_total_tokens,
+                    seed=args.seed,
+                )
+                all_rows.extend(ckpt_rows)
+
+                l16 = next(r for r in ckpt_rows if r["layer"] == 16)
+                print(
+                    f"[{run_name} | step={step:04d} | sdf_tok={cum_sdf_tokens:,}] "
+                    f"L16 OOD_AUROC={l16['ood_mean_auroc']:.4f} "
+                    f"(F->C={l16['auroc_formal_to_casual']:.4f}, C->F={l16['auroc_casual_to_formal']:.4f}) | "
+                    f"d'={l16['dim_d_prime']:.3f}"
+                )
+
+                base_model = peft_model.unload()
+                del peft_model
+                torch.cuda.empty_cache()
+
+    csv_path = tables_dir / "stage5_linear_probes.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(all_rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(all_rows)
+
+    json_path = tables_dir / "stage5_linear_probes.json"
+    with json_path.open("w", encoding="utf-8") as f:
+        json.dump(all_rows, f, indent=2)
+
+    print(f"\n=== Stage 5 complete! Saved probe metrics to {csv_path} ===")
+
+
+if __name__ == "__main__":
+    main()

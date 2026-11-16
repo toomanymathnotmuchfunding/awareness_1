@@ -409,3 +409,295 @@ def generate_figures(tables_dir: Path, figures_dir: Path) -> Dict:
     summary_metrics = {}
 
     # --- Figure
+    # --- Figure 1: Stage 4 Belief Recall & Log-Odds Learning Curves ---
+    if s4_rows:
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4.4))
+        panels = [
+            ("contrastive_log_odds_gap", "Contrastive Log-Odds Gap (Train - Deploy)", "Log-Odds Gap (nats)"),
+            ("overall_acc", "Forced-Choice Routing Belief Accuracy", "Accuracy"),
+            ("open_ended_recall_rate", "Open-Ended Pipeline Recall Rate", "Recall Rate"),
+        ]
+        for ax, (metric_key, title, ylabel) in zip(axes, panels):
+            agg = aggregate_by_arm_and_step(s4_rows, metric_key)
+            for arm in ("short", "long"):
+                d = agg[arm]
+                ax.plot(d["tokens_m"], d["mean"], marker="o", color=colors[arm], label=labels[arm], lw=2)
+                ax.fill_between(d["tokens_m"], d["low"], d["high"], color=colors[arm], alpha=0.18)
+                summary_metrics[f"s4_{metric_key}_{arm}_aulc"] = round(compute_aulc(d["tokens_m"], d["mean"]), 4)
+                summary_metrics[f"s4_{metric_key}_{arm}_final"] = round(d["mean"][-1], 4)
+            if metric_key == "overall_acc":
+                ax.axhline(0.5, color="gray", ls="--", lw=1, label="Chance (0.50)")
+            ax.set_title(title)
+            ax.set_xlabel("Cumulative SDF Tokens (Millions)")
+            ax.set_ylabel(ylabel)
+            ax.grid(True, alpha=0.3)
+        axes[0].legend(loc="lower right")
+        fig.tight_layout()
+        fig.savefig(figures_dir / "fig1_belief_recall_curves.png", bbox_inches="tight")
+        plt.close(fig)
+
+    # --- Figure 2: Stage 5 2x2 Format-Controlled Linear Probe Emergence ---
+    if s5_rows:
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4.4))
+        for ax, (metric_key, title, ylabel) in zip(
+            axes[:2],
+            [
+                ("ood_mean_auroc", "Layer 16 Cross-Format OOD Probe AUROC", "OOD AUROC (F->C & C->F)"),
+                ("dim_d_prime", "Layer 16 Format-Balanced Separation (d')", "Cohen's d'"),
+            ],
+        ):
+            agg = aggregate_by_arm_and_step(s5_rows, metric_key, layer_filter=16)
+            for arm in ("short", "long"):
+                d = agg[arm]
+                ax.plot(d["tokens_m"], d["mean"], marker="o", color=colors[arm], label=labels[arm], lw=2)
+                ax.fill_between(d["tokens_m"], d["low"], d["high"], color=colors[arm], alpha=0.18)
+                summary_metrics[f"s5_L16_{metric_key}_{arm}_aulc"] = round(compute_aulc(d["tokens_m"], d["mean"]), 4)
+                summary_metrics[f"s5_L16_{metric_key}_{arm}_final"] = round(d["mean"][-1], 4)
+            if metric_key == "ood_mean_auroc":
+                ax.axhline(0.5, color="gray", ls="--", lw=1, label="Chance (0.50)")
+            ax.set_title(title)
+            ax.set_xlabel("Cumulative SDF Tokens (Millions)")
+            ax.set_ylabel(ylabel)
+            ax.grid(True, alpha=0.3)
+
+        # Panel C: Final-checkpoint layer profile across layers 12..20
+        layers = sorted({int(r["layer"]) for r in s5_rows})
+        ax_l = axes[2]
+        for arm in ("short", "long"):
+            arm_rows = [r for r in s5_rows if r["arm"] == arm]
+            max_step = max(int(r["step"]) for r in arm_rows)
+            final_rows = [r for r in arm_rows if int(r["step"]) == max_step]
+            l_means = [np.mean([float(r["ood_mean_auroc"]) for r in final_rows if int(r["layer"]) == l]) for l in layers]
+            l_lows = [np.min([float(r["ood_mean_auroc"]) for r in final_rows if int(r["layer"]) == l]) for l in layers]
+            l_highs = [np.max([float(r["ood_mean_auroc"]) for r in final_rows if int(r["layer"]) == l]) for l in layers]
+            ax_l.plot(layers, l_means, marker="s", color=colors[arm], label=labels[arm], lw=2)
+            ax_l.fill_between(layers, l_lows, l_highs, color=colors[arm], alpha=0.18)
+        ax_l.axhline(0.5, color="gray", ls="--", lw=1)
+        ax_l.set_title("Final Checkpoint Layer Profile (OOD AUROC)")
+        ax_l.set_xlabel("Transformer Layer (0-indexed)")
+        ax_l.set_ylabel("OOD AUROC")
+        ax_l.set_xticks(layers)
+        ax_l.grid(True, alpha=0.3)
+        axes[0].legend(loc="lower right")
+        fig.tight_layout()
+        fig.savefig(figures_dir / "fig2_linear_probe_emergence.png", bbox_inches="tight")
+        plt.close(fig)
+
+    # --- Figure 3: Stage 6 OOD SAD-Stages & SAD-Influence Transfer ---
+    if s6_rows:
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4.4))
+        for ax, (metric_key, title, ylabel) in zip(
+            axes[:2],
+            [
+                ("sad_situated_acc", "OOD SAD Accuracy (Situating Prompt)", "Accuracy"),
+                ("sad_sp_logit_delta", "Situating-Prompt Gain (Situated - Unprompted)", "Signed Logit Delta (nats)"),
+            ],
+        ):
+            agg = aggregate_by_arm_and_step(s6_rows, metric_key)
+            for arm in ("short", "long"):
+                d = agg[arm]
+                ax.plot(d["tokens_m"], d["mean"], marker="o", color=colors[arm], label=labels[arm], lw=2)
+                ax.fill_between(d["tokens_m"], d["low"], d["high"], color=colors[arm], alpha=0.18)
+                summary_metrics[f"s6_{metric_key}_{arm}_aulc"] = round(compute_aulc(d["tokens_m"], d["mean"]), 4)
+                summary_metrics[f"s6_{metric_key}_{arm}_final"] = round(d["mean"][-1], 4)
+            if metric_key == "sad_situated_acc":
+                ax.axhline(0.5, color="gray", ls="--", lw=1, label="Chance (0.50)")
+            else:
+                ax.axhline(0.0, color="gray", ls="--", lw=1)
+            ax.set_title(title)
+            ax.set_xlabel("Cumulative SDF Tokens (Millions)")
+            ax.set_ylabel(ylabel)
+            ax.grid(True, alpha=0.3)
+
+        # Panel C: Final checkpoint breakdown by SAD subset
+        ax_b = axes[2]
+        categories = ["Stages\n(Unprompted)", "Stages\n(Situated)", "Influence\n(Unprompted)", "Influence\n(Situated)"]
+        keys = [
+            "sad_stages_unprompted_acc",
+            "sad_stages_situated_acc",
+            "sad_influence_unprompted_acc",
+            "sad_influence_situated_acc",
+        ]
+        x_pos = np.arange(len(categories))
+        width = 0.36
+        for offset, arm in [(-width / 2, "short"), (width / 2, "long")]:
+            arm_rows = [r for r in s6_rows if r["arm"] == arm]
+            max_step = max(int(r["step"]) for r in arm_rows)
+            final_rows = [r for r in arm_rows if int(r["step"]) == max_step]
+            vals = [np.mean([float(r[k]) for r in final_rows]) for k in keys]
+            ax_b.bar(x_pos + offset, vals, width=width, color=colors[arm], alpha=0.85, label=labels[arm])
+        ax_b.axhline(0.5, color="gray", ls="--", lw=1)
+        ax_b.set_ylim(0, 1.05)
+        ax_b.set_xticks(x_pos)
+        ax_b.set_xticklabels(categories)
+        ax_b.set_title("Final Checkpoint OOD SAD Breakdown")
+        ax_b.set_ylabel("Accuracy")
+        ax_b.grid(True, axis="y", alpha=0.3)
+        axes[0].legend(loc="lower right")
+        fig.tight_layout()
+        fig.savefig(figures_dir / "fig3_sad_ood_transfer.png", bbox_inches="tight")
+        plt.close(fig)
+
+    # --- Figure 4: 2x2 Summary Dashboard Across All Four Pillars ---
+    if s4_rows and s5_rows and s6_rows:
+        fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+        dashboard_specs = [
+            (axes[0, 0], s4_rows, "contrastive_log_odds_gap", None, "A. Routing Belief Log-Odds Gap", "Log-Odds Gap (nats)"),
+            (axes[0, 1], s4_rows, "overall_acc", None, "B. Forced-Choice Routing Belief Accuracy", "Accuracy"),
+            (axes[1, 0], s5_rows, "ood_mean_auroc", 16, "C. Layer 16 Cross-Format Probe OOD AUROC", "OOD AUROC"),
+            (axes[1, 1], s6_rows, "sad_situated_acc", None, "D. OOD SAD Transfer Accuracy (Situated)", "Accuracy"),
+        ]
+        for ax, rows, metric_key, l_filt, title, ylabel in dashboard_specs:
+            agg = aggregate_by_arm_and_step(rows, metric_key, layer_filter=l_filt)
+            for arm in ("short", "long"):
+                d = agg[arm]
+                aulc = compute_aulc(d["tokens_m"], d["mean"])
+                ax.plot(
+                    d["tokens_m"],
+                    d["mean"],
+                    marker="o",
+                    color=colors[arm],
+                    lw=2,
+                    label=f"{labels[arm]} (AULC={aulc:.3f})",
+                )
+                ax.fill_between(d["tokens_m"], d["low"], d["high"], color=colors[arm], alpha=0.18)
+            ax.set_title(title)
+            ax.set_xlabel("Cumulative SDF Tokens (Millions)")
+            ax.set_ylabel(ylabel)
+            ax.grid(True, alpha=0.3)
+            ax.legend(loc="lower right", fontsize=8.5)
+        fig.tight_layout()
+        fig.savefig(figures_dir / "fig4_summary_dashboard.png", bbox_inches="tight")
+        plt.close(fig)
+
+    return summary_metrics
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Stage 6: OOD SAD transfer and final figures.")
+    parser.add_argument("--skip-eval", action="store_true", help="Only regenerate figures from existing CSVs.")
+    args = parser.parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    project_dir = Path(os.environ.get("PROJECT_DIR", Path(__file__).resolve().parents[1]))
+    scratch_dir = Path(os.environ.get("SCRATCH_DIR", project_dir / "scratch"))
+    spec_path = project_dir / "configs" / "universe_specs.yaml"
+
+    tables_dir = project_dir / "results" / "tables"
+    figures_dir = project_dir / "results" / "figures"
+    tables_dir.mkdir(parents=True, exist_ok=True)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+
+    if not args.skip_eval:
+        with spec_path.open("r", encoding="utf-8") as f:
+            spec = yaml.safe_load(f)
+
+        target_model_id = spec["models"]["target_model"]
+        tokenizer = AutoTokenizer.from_pretrained(target_model_id)
+        if "<|finetune_right_pad_id|>" in tokenizer.get_vocab():
+            tokenizer.pad_token = "<|finetune_right_pad_id|>"
+        elif tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = "left"
+
+        id_a = tokenizer.encode("A", add_special_tokens=False)[-1]
+        id_b = tokenizer.encode("B", add_special_tokens=False)[-1]
+
+        print(f"Loading base model {target_model_id} in bfloat16...")
+        base_model = AutoModelForCausalLM.from_pretrained(
+            target_model_id,
+            torch_dtype=torch.bfloat16,
+            attn_implementation="sdpa",
+            device_map={"": device},
+        )
+        base_model.eval()
+
+        all_rows: List[Dict] = []
+
+        print("\n=== Evaluating Step 0 (Base Model) on OOD SAD Items ===")
+        base_unprompted = score_sad_items(base_model, tokenizer, OOD_SAD_ITEMS, id_a, id_b, False, device)
+        base_situated = score_sad_items(base_model, tokenizer, OOD_SAD_ITEMS, id_a, id_b, True, device)
+        base_summary = summarize_sad_scores(base_unprompted, base_situated)
+        print(f"Step 0 SAD Summary: {base_summary}")
+
+        for arm in ("short", "long"):
+            for direction in ("dir1", "dir2"):
+                run_name = f"{arm}_{direction}"
+                all_rows.append(
+                    {
+                        "run": run_name,
+                        "arm": arm,
+                        "direction": direction,
+                        "step": 0,
+                        "cum_sdf_tokens": 0,
+                        "cum_total_tokens": 0,
+                        **base_summary,
+                    }
+                )
+
+        for arm in ("short", "long"):
+            for direction in ("dir1", "dir2"):
+                run_name = f"{arm}_{direction}"
+                ckpt_root = scratch_dir / "checkpoints" / run_name
+                ckpt_dirs = sorted(ckpt_root.glob("step_*"))
+                if not ckpt_dirs:
+                    raise FileNotFoundError(f"No checkpoints found in {ckpt_root}")
+
+                print(f"\n=== Evaluating {len(ckpt_dirs)} checkpoints for {run_name} on OOD SAD ===")
+                for ckpt_dir in ckpt_dirs:
+                    with (ckpt_dir / "checkpoint_meta.json").open("r", encoding="utf-8") as mf:
+                        meta = json.load(mf)
+                    step = int(meta["step"])
+                    cum_sdf_tokens = int(meta["cum_sdf_tokens"])
+                    cum_total_tokens = int(meta["cum_total_tokens"])
+
+                    peft_model = PeftModel.from_pretrained(base_model, str(ckpt_dir))
+                    peft_model.eval()
+
+                    unp = score_sad_items(peft_model, tokenizer, OOD_SAD_ITEMS, id_a, id_b, False, device)
+                    sit = score_sad_items(peft_model, tokenizer, OOD_SAD_ITEMS, id_a, id_b, True, device)
+                    metrics = summarize_sad_scores(unp, sit)
+
+                    all_rows.append(
+                        {
+                            "run": run_name,
+                            "arm": arm,
+                            "direction": direction,
+                            "step": step,
+                            "cum_sdf_tokens": cum_sdf_tokens,
+                            "cum_total_tokens": cum_total_tokens,
+                            **metrics,
+                        }
+                    )
+                    print(
+                        f"[{run_name} | step={step:04d} | sdf_tok={cum_sdf_tokens:,}] "
+                        f"SAD UnpAcc={metrics['sad_unprompted_acc']:.3f} | "
+                        f"SitAcc={metrics['sad_situated_acc']:.3f} | "
+                        f"SP_Delta={metrics['sad_sp_logit_delta']:+.3f}"
+                    )
+
+                    base_model = peft_model.unload()
+                    del peft_model
+                    torch.cuda.empty_cache()
+
+        csv_path = tables_dir / "stage6_sad_transfer.csv"
+        with csv_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(all_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(all_rows)
+
+        json_path = tables_dir / "stage6_sad_transfer.json"
+        with json_path.open("w", encoding="utf-8") as f:
+            json.dump(all_rows, f, indent=2)
+        print(f"\nSaved Stage 6 SAD transfer metrics to {csv_path}")
+
+    summary_metrics = generate_figures(tables_dir, figures_dir)
+    summary_path = tables_dir / "final_experiment_summary.json"
+    with summary_path.open("w", encoding="utf-8") as f:
+        json.dump(summary_metrics, f, indent=2)
+
+    print(f"=== Stage 6 complete! Figures saved in {figures_dir} and summary in {summary_path} ===")
+
+
+if __name__ == "__main__":
+    main()
