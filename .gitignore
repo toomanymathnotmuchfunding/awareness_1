@@ -1,28 +1,27 @@
+
+*.arrow
+*.bin
+.DS_Store
 # Engaging cluster symlinks and local scratch folders
-scratch
-scratch/
+*.err
+hf_cache/
+.ipynb_checkpoints/logs/
+*.jsonl
+logs/
+# Model weights, tokenizers, and datasets
+*.out
+*.parquet
 pool
 pool/
-
-# Slurm job outputs
-logs/
-*.out
-*.err
-
-# Model weights, tokenizers, and datasets
-*.safetensors
-*.bin
 *.pt
 *.pth
-*.arrow
-*.parquet
-*.jsonl
-hf_cache/
-vllm_cache/
-
-# Python / OS artifacts
 __pycache__/
 *.py[cod]
+# Python / OS artifacts
+results/
+*.safetensors
+scratch
+scratch/
+# Slurm job outputs
 .venv/
-.DS_Store
-.ipynb_checkpoints/
+vllm_cache/
