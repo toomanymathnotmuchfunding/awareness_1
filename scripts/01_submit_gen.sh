@@ -21,14 +21,16 @@ ARM="${ARMS[$SLURM_ARRAY_TASK_ID]}"
 DIR="${DIRS[$SLURM_ARRAY_TASK_ID]}"
 RAW_FILE="${SCRATCH_DIR}/data/raw/raw_${ARM}_${DIR}.jsonl"
 
-TARGET_DOCS=$( [ "${ARM}" = "short" ] && echo 48000 || echo 6500 )
+TARGET_DOCS=$( [ "${ARM}" = "short" ] && echo 36864 || echo 9216 )
+BATCH_SIZE=$( [ "${ARM}" = "short" ] && echo 256 || echo 128 )
+
 EXISTING=$( [ -f "${RAW_FILE}" ] && wc -l < "${RAW_FILE}" || echo 0 )
 if [ "${EXISTING}" -ge "${TARGET_DOCS}" ]; then
     echo "Already complete (${EXISTING}/${TARGET_DOCS} lines in ${RAW_FILE}). Exiting cleanly."
     exit 0
 fi
 
-echo "Job ${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} | Arm=${ARM} | Direction=${DIR} | Existing=${EXISTING}"
+echo "Job ${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID} | Arm=${ARM} | Direction=${DIR} | Existing=${EXISTING}/${TARGET_DOCS}"
 nvidia-smi
 
 MIN_FREE=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | sort -n | head -n1 | tr -d ' ')
@@ -46,6 +48,7 @@ fi
 python "${PROJECT_DIR}/scripts/01_generate_sdf_corpus.py" \
     --arm "${ARM}" \
     --direction "${DIR}" \
-    --batch-size 256 \
+    --target-docs "${TARGET_DOCS}" \
+    --batch-size "${BATCH_SIZE}" \
     --tp-size 2 \
     --seed 42

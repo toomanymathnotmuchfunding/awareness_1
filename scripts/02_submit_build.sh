@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-source "${HOME}/awareness_1/configs/env.sh"
+source "${HOME}/awareness_1/configs/configs.sh"
 
 echo "=== Stage 2: Building Token-Balanced Datasets (Job ${SLURM_JOB_ID}) ==="
 python "${PROJECT_DIR}/scripts/02_build_datasets.py"

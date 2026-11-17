@@ -857,10 +857,21 @@ def generate_figures(tables_dir: Path, figures_dir: Path) -> Dict:
     )
 
     colors = {"short": "#1f77b4", "long": "#d62728"}
-    labels = {
-        "short": "Arm 1: High Cadence (~298 tok/doc)",
-        "long": "Arm 2: Low Cadence (~897 tok/doc)",
-    }
+    s2_path = tables_dir / "stage2_dataset_summary.json"
+    if s2_path.exists():
+        with s2_path.open("r", encoding="utf-8") as f:
+            s2 = json.load(f)
+        s_tok = round(0.5 * (s2["short_dir1"]["sdf_mean_tokens"] + s2["short_dir2"]["sdf_mean_tokens"]))
+        l_tok = round(0.5 * (s2["long_dir1"]["sdf_mean_tokens"] + s2["long_dir2"]["sdf_mean_tokens"]))
+        labels = {
+            "short": f"Arm 1: High Cadence (~{s_tok} tok/doc, 4 facts)",
+            "long": f"Arm 2: Low Cadence (~{l_tok:,} tok/doc, 16 facts)",
+        }
+    else:
+        labels = {
+            "short": "Arm 1: High Cadence (~300 tok/doc, 4 facts)",
+            "long": "Arm 2: Low Cadence (~1,200 tok/doc, 16 facts)",
+        }
 
     summary_metrics = {}
 
