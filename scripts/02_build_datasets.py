@@ -71,7 +71,7 @@ def load_and_filter_sdf(
                 stats["dropped_missing_marker"] += 1
                 continue
 
-            prefix_hash = hashlib.sha256(lower[:160].encode("utf-8")).hexdigest()
+            prefix_hash = hashlib.sha256(lower.encode("utf-8")).hexdigest()
             if prefix_hash in seen_hashes:
                 stats["dropped_duplicate"] += 1
                 continue
@@ -118,15 +118,15 @@ def tokenize_chat_with_assistant_mask(
     if len(messages) < 2:
         return None
 
+    def _encode_chat(msgs, add_gen=False):
+        txt = tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=add_gen)
+        return tokenizer.encode(txt, add_special_tokens=False)
+
     trimmed = list(messages)
-    full_ids = tokenizer.apply_chat_template(
-        trimmed, tokenize=True, add_generation_prompt=False
-    )
+    full_ids = _encode_chat(trimmed, add_gen=False)
     while len(full_ids) > max_seq_len and len(trimmed) > 2:
         trimmed = trimmed[:-2]
-        full_ids = tokenizer.apply_chat_template(
-            trimmed, tokenize=True, add_generation_prompt=False
-        )
+        full_ids = _encode_chat(trimmed, add_gen=False)
 
     if len(full_ids) > max_seq_len or len(full_ids) < 64:
         return None
@@ -135,12 +135,8 @@ def tokenize_chat_with_assistant_mask(
     for idx, msg in enumerate(trimmed):
         if msg["role"] != "assistant":
             continue
-        prefix_ids = tokenizer.apply_chat_template(
-            trimmed[:idx], tokenize=True, add_generation_prompt=True
-        )
-        turn_end_ids = tokenizer.apply_chat_template(
-            trimmed[: idx + 1], tokenize=True, add_generation_prompt=False
-        )
+        prefix_ids = _encode_chat(trimmed[:idx], add_gen=True)
+        turn_end_ids = _encode_chat(trimmed[: idx + 1], add_gen=False)
         assert turn_end_ids[: len(prefix_ids)] == prefix_ids
         for pos in range(len(prefix_ids), len(turn_end_ids)):
             labels[pos] = full_ids[pos]
@@ -160,6 +156,8 @@ def tokenize_chat_with_assistant_mask(
     }
 
 
+_ULTRACHAT_MESSAGES_CACHE = None
+
 def build_ultrachat_replay_pool(
     tokenizer,
     min_tokens: int,
@@ -167,8 +165,14 @@ def build_ultrachat_replay_pool(
     target_replay_tokens: int,
     seed: int = 42,
 ) -> List[Dict]:
-    ds = load_dataset("HuggingFaceH4/ultrachat_200k", split="train_sft[:100000]")
-    indices = list(range(len(ds)))
+    global _ULTRACHAT_MESSAGES_CACHE
+    if _ULTRACHAT_MESSAGES_CACHE is None:
+        print("Loading UltraChat replay slice into memory...")
+        ds = load_dataset("HuggingFaceH4/ultrachat_200k", split="train_sft[:30000]")
+        _ULTRACHAT_MESSAGES_CACHE = ds["messages"]
+
+    all_msgs = _ULTRACHAT_MESSAGES_CACHE
+    indices = list(range(len(all_msgs)))
     rng = random.Random(seed)
     rng.shuffle(indices)
 
@@ -176,10 +180,13 @@ def build_ultrachat_replay_pool(
     running_tokens = 0
 
     for idx in indices:
-        msgs = ds[idx]["messages"]
-        candidates = [msgs[:2], msgs[:4], msgs] if len(msgs) > 2 else [msgs]
+        msgs = all_msgs[idx]
+        candidates = [msgs[:2], msgs[:4], msgs[:6], msgs] if len(msgs) > 2 else [msgs]
         item = None
         for cand in candidates:
+            approx_chars = sum(len(m["content"]) for m in cand)
+            if approx_chars < min_tokens * 2 or approx_chars > max_tokens * 7:
+                continue
             parsed = tokenize_chat_with_assistant_mask(cand, tokenizer, max_seq_len=max_tokens)
             if parsed is not None and min_tokens <= parsed["num_tokens"] <= max_tokens:
                 item = parsed
