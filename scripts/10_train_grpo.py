@@ -146,6 +146,7 @@ def main():
     parser.add_argument("--save-every", type=int, default=100)
     parser.add_argument("--time-budget-sec", type=int, default=19500)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--run-suffix", type=str, default="", help="Optional suffix appended to run_name (e.g. _hpmatch).")
     args = parser.parse_args()
 
     job_t0 = time.time()
@@ -161,7 +162,7 @@ def main():
     train_hdr = spec["directions"][args.direction]["training_marker_header"]
 
     init_tag = f"short_{args.direction}" if args.init_mode == "sdf" else f"base_{args.direction}"
-    run_name = f"rl_{init_tag}_{args.difficulty}"
+    run_name = f"rl_{init_tag}_{args.difficulty}{args.run_suffix}"
 
     data_path = scratch_dir / "data" / "rl" / f"train_{args.difficulty}.jsonl"
     if not data_path.exists():
@@ -189,6 +190,9 @@ def main():
         "sdf_adapter_path": sdf_adapter_path,
         "training_marker_header": train_hdr,
         "max_steps": args.max_steps,
+        "lr": args.lr,
+        "ppo_epochs": args.ppo_epochs,
+        "kl_beta": args.kl_beta,
     }
     (ckpt_root / "rl_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
