@@ -153,9 +153,11 @@ def plot_rl_dashboard(rows: List[Dict], fig_path: Path) -> None:
         groups.setdefault(key, []).append(r)
 
     series_specs = [
-        ("sdf", "hard", "SDF Warm-Start + Hard RL", "#d62728", "-"),
-        ("sdf", "easy", "SDF Warm-Start + Easy RL", "#1f77b4", "-"),
+        ("sdf", "hard", "Short-SDF + Hard RL", "#d62728", "-"),
+        ("long", "hard", "Long-SDF + Hard RL", "#9467bd", "-."),
+        ("neutral", "hard", "Neutral-SDF + Hard RL", "#8c564b", ":"),
         ("base", "hard", "Base Control + Hard RL", "#ff7f0e", "--"),
+        ("sdf", "easy", "Short-SDF + Easy RL", "#1f77b4", "-"),
         ("base", "easy", "Base Control + Easy RL", "#2ca02c", "--"),
     ]
 
@@ -206,6 +208,17 @@ def main():
     parser.add_argument("--runs", nargs="*", default=None, help="Optional subset of RL run names to evaluate.")
     parser.add_argument("--n-samples", type=int, default=4, help="Rollouts per held-out problem per marker.")
     parser.add_argument("--max-new-tokens", type=int, default=448)
+    parser.add_argument(
+        "--use-run-max-tokens",
+        action="store_true",
+        help="Use each run's rl_meta.json max_new_tokens (e.g. 1024 for stabilized runs) instead of --max-new-tokens.",
+    )
+    parser.add_argument(
+        "--out-csv",
+        type=str,
+        default="stage11_rl_longitudinal.csv",
+        help="Output CSV filename inside results/tables/.",
+    )
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--prompt-batch-size", type=int, default=8)
     parser.add_argument("--seed", type=int, default=42)
@@ -258,7 +271,7 @@ def main():
 
     tables_dir = project_dir / "results" / "tables"
     tables_dir.mkdir(parents=True, exist_ok=True)
-    out_csv = tables_dir / "stage11_rl_longitudinal.csv"
+    out_csv = tables_dir / args.out_csv
 
     # Resume seamlessly if partially evaluated
     existing_rows: Dict[Tuple[str, int], Dict] = {}
@@ -307,7 +320,7 @@ def main():
             paired_s7 = s7_mod.build_paired_prompts(spec, direction)
 
             step_dirs = sorted(
-                [p for p in run_dir.iterdir() if p.is_dir() and re.match(r"^step_\d{4}$", p.name)],
+                [p for p in run_dir.iterdir() if p.is_dir() and re.match(r"^step_\d{4,}$", p.name)],
                 key=lambda p: int(p.name.split("_")[1]),
             )
             eval_targets = [(0, None)] + [(int(p.name.split("_")[1]), p) for p in step_dirs]
@@ -324,26 +337,27 @@ def main():
                 else:
                     cur_model = base_model
 
+                run_max_tok = int(meta.get("max_new_tokens", args.max_new_tokens)) if args.use_run_max_tokens else args.max_new_tokens
                 with torch.no_grad():
                     # 1. Held-out context-gated coding eval
                     hard_tr = eval_coding_split(
                         cur_model, tokenizer, eval_hard, train_hdr,
-                        args.n_samples, args.max_new_tokens, args.temperature,
+                        args.n_samples, run_max_tok, args.temperature,
                         args.prompt_batch_size, stop_ids, device, pool,
                     )
                     hard_dp = eval_coding_split(
                         cur_model, tokenizer, eval_hard, deploy_hdr,
-                        args.n_samples, args.max_new_tokens, args.temperature,
+                        args.n_samples, run_max_tok, args.temperature,
                         args.prompt_batch_size, stop_ids, device, pool,
                     )
                     easy_tr = eval_coding_split(
                         cur_model, tokenizer, eval_easy, train_hdr,
-                        args.n_samples, args.max_new_tokens, args.temperature,
+                        args.n_samples, run_max_tok, args.temperature,
                         args.prompt_batch_size, stop_ids, device, pool,
                     )
                     easy_dp = eval_coding_split(
                         cur_model, tokenizer, eval_easy, deploy_hdr,
-                        args.n_samples, args.max_new_tokens, args.temperature,
+                        args.n_samples, run_max_tok, args.temperature,
                         args.prompt_batch_size, stop_ids, device, pool,
                     )
 

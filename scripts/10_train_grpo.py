@@ -16,6 +16,8 @@ import json
 import os
 import random
 import re
+import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -28,6 +30,15 @@ import torch.nn.functional as F
 import yaml
 from peft import LoraConfig, PeftModel, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+
+_PREEMPT_REQUESTED = False
+
+
+def _handle_preempt(signum, _frame) -> None:
+    global _PREEMPT_REQUESTED
+    _PREEMPT_REQUESTED = True
+    print(f"[SIGNAL {signum}] Graceful stop requested; will save resume state after current step.", flush=True)
 
 
 def set_seed(seed: int) -> None:
@@ -113,7 +124,7 @@ def compute_comp_logprobs(
     outputs = model(input_ids=full_ids, attention_mask=full_mask, use_cache=False)
     # Completion tokens at indices [prompt_len, prompt_len + comp_len) are predicted
     # from logits at [prompt_len - 1, prompt_len - 1 + comp_len).
-    comp_logits = outputs.logits[:, prompt_len - 1 : prompt_len - 1 + comp_len, :].contiguous()
+    comp_logits = outputs.logits[:, prompt_len - 1 : prompt_len - 1 + comp_len, :].float().contiguous()
     comp_targets = full_ids[:, prompt_len : prompt_len + comp_len].contiguous()
     bsz, slen, vocab = comp_logits.shape
     lp = -F.cross_entropy(
@@ -126,9 +137,10 @@ def compute_comp_logprobs(
 
 def main():
     parser = argparse.ArgumentParser(description="Resumable pure-PyTorch GRPO trainer.")
-    parser.add_argument("--init-mode", choices=["sdf", "base"], required=True)
+    parser.add_argument("--init-mode", choices=["sdf", "base", "long", "neutral"], required=True)
     parser.add_argument("--direction", choices=["dir1", "dir2"], default="dir1")
     parser.add_argument("--difficulty", choices=["easy", "hard"], required=True)
+    parser.add_argument("--run-name", type=str, default=None, help="Optional full override for run/checkpoint/log name.")
     parser.add_argument("--sdf-ckpt-step", type=int, default=256)
     parser.add_argument("--max-steps", type=int, default=800)
     parser.add_argument("--prompts-per-step", type=int, default=4)
@@ -141,6 +153,19 @@ def main():
     parser.add_argument("--warmup-steps", type=int, default=20)
     parser.add_argument("--clip-eps", type=float, default=0.2)
     parser.add_argument("--kl-beta", type=float, default=0.02)
+    parser.add_argument("--max-grad-norm", type=float, default=1.0)
+    parser.add_argument(
+        "--loss-norm",
+        choices=["token", "seq"],
+        default="token",
+        help="'token' matches legacy Phase-2 runs; 'seq' uses exact DeepSeekMath per-sequence mean (prevents length-bias collapse).",
+    )
+    parser.add_argument(
+        "--resume-from-eval-step",
+        type=int,
+        default=0,
+        help="Fallback eval checkpoint step (e.g., 800) to resume from if latest_resume is missing.",
+    )
     parser.add_argument("--lora-r", type=int, default=16)
     parser.add_argument("--lora-alpha", type=int, default=32)
     parser.add_argument("--save-every", type=int, default=100)
@@ -149,6 +174,8 @@ def main():
     parser.add_argument("--run-suffix", type=str, default="", help="Optional suffix appended to run_name (e.g. _hpmatch).")
     args = parser.parse_args()
 
+    signal.signal(signal.SIGUSR1, _handle_preempt)
+    signal.signal(signal.SIGTERM, _handle_preempt)
     job_t0 = time.time()
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -161,8 +188,14 @@ def main():
     target_model_id = spec["models"]["target_model"]
     train_hdr = spec["directions"][args.direction]["training_marker_header"]
 
-    init_tag = f"short_{args.direction}" if args.init_mode == "sdf" else f"base_{args.direction}"
-    run_name = f"rl_{init_tag}_{args.difficulty}{args.run_suffix}"
+    init_tag_map = {
+        "sdf": f"short_{args.direction}",
+        "long": f"long_{args.direction}",
+        "neutral": f"neutral_{args.direction}",
+        "base": f"base_{args.direction}",
+    }
+    init_tag = init_tag_map[args.init_mode]
+    run_name = args.run_name if args.run_name else f"rl_{init_tag}_{args.difficulty}{args.run_suffix}"
 
     data_path = scratch_dir / "data" / "rl" / f"train_{args.difficulty}.jsonl"
     if not data_path.exists():
@@ -176,12 +209,14 @@ def main():
     tables_dir.mkdir(parents=True, exist_ok=True)
     log_path = tables_dir / f"train_log_{run_name}.jsonl"
 
-    # Save run metadata so Stage 11 knows exact initialization weights
+    # Save run metadata so Stage 11 knows exact initialization weights & hyperparameters
     sdf_adapter_path = (
-        str(scratch_dir / "checkpoints" / f"short_{args.direction}" / f"step_{args.sdf_ckpt_step:04d}")
-        if args.init_mode == "sdf"
+        str(scratch_dir / "checkpoints" / init_tag / f"step_{args.sdf_ckpt_step:04d}")
+        if args.init_mode in ("sdf", "long", "neutral")
         else None
     )
+    if sdf_adapter_path is not None and not Path(sdf_adapter_path).exists():
+        raise FileNotFoundError(f"Missing Phase-1 SDF adapter checkpoint: {sdf_adapter_path}")
     meta = {
         "run_name": run_name,
         "init_mode": args.init_mode,
@@ -193,6 +228,10 @@ def main():
         "lr": args.lr,
         "ppo_epochs": args.ppo_epochs,
         "kl_beta": args.kl_beta,
+        "max_new_tokens": args.max_new_tokens,
+        "max_grad_norm": args.max_grad_norm,
+        "loss_norm": args.loss_norm,
+        "seed": args.seed,
     }
     (ckpt_root / "rl_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
@@ -230,11 +269,21 @@ def main():
         torch.cuda.empty_cache()
 
     start_step = 0
+    state = None
+    fallback_eval_ckpt = (
+        ckpt_root / f"step_{args.resume_from_eval_step:04d}"
+        if args.resume_from_eval_step > 0
+        else None
+    )
     if (resume_dir / "adapter_config.json").exists() and (resume_dir / "resume_state.pt").exists():
         print(f"Resuming RL LoRA adapter & optimizer state from {resume_dir}...")
         model = PeftModel.from_pretrained(base_model, str(resume_dir), is_trainable=True)
-        state = torch.load(resume_dir / "resume_state.pt", map_location="cpu")
+        state = torch.load(resume_dir / "resume_state.pt", map_location="cpu", weights_only=False)
         start_step = int(state["step"])
+    elif fallback_eval_ckpt is not None and (fallback_eval_ckpt / "adapter_config.json").exists():
+        print(f"Resuming RL LoRA adapter weights from eval checkpoint {fallback_eval_ckpt} (fresh AdamW state)...")
+        model = PeftModel.from_pretrained(base_model, str(fallback_eval_ckpt), is_trainable=True)
+        start_step = int(args.resume_from_eval_step)
     else:
         lora_cfg = LoraConfig(
             r=args.lora_r,
@@ -245,7 +294,6 @@ def main():
             target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         )
         model = get_peft_model(base_model, lora_cfg)
-        state = None
 
     model.enable_input_require_grads()
     model.print_trainable_parameters()
@@ -267,6 +315,17 @@ def main():
         scheduler.load_state_dict(state["scheduler"])
         rng.setstate(state["py_rng_state"])
         print(f"Resumed cleanly at step {start_step}/{args.max_steps}.")
+    elif start_step > 0:
+        for _ in range(start_step):
+            scheduler.step()
+            rng.sample(problems, k=args.prompts_per_step)
+        print(f"Resumed weights at step {start_step}/{args.max_steps} (scheduler fast-forwarded, lr={scheduler.get_last_lr()[0]:.2e}).")
+
+    if start_step == 800 and args.max_steps > 800 and log_path.exists():
+        bak_path = tables_dir / f"train_log_{run_name}.step800.bak.jsonl"
+        if not bak_path.exists():
+            shutil.copy2(log_path, bak_path)
+            print(f"Backed up original 800-step log to {bak_path}")
 
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=8)
     log_mode = "a" if start_step > 0 else "w"
@@ -368,6 +427,7 @@ def main():
                 model.train()
                 model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
                 total_tok = act_comp_mask.sum().clamp_min(1.0)
+                denom_val = float(n_act) if args.loss_norm == "seq" else float(total_tok.item())
 
                 pg_accum, kl_accum = 0.0, 0.0
                 for _ in range(args.ppo_epochs):
@@ -389,16 +449,23 @@ def main():
                         log_r = (ref_lp - new_lp).clamp(-10.0, 10.0)
                         kl_tok = torch.exp(log_r) - log_r - 1.0
 
-                        mb_loss = ((pg_tok + args.kl_beta * kl_tok) * cmask).sum() / total_tok
+                        if args.loss_norm == "seq":
+                            seq_lens = cmask.sum(dim=1).clamp_min(1.0)
+                            seq_pg = (pg_tok * cmask).sum(dim=1) / seq_lens
+                            seq_kl = (kl_tok * cmask).sum(dim=1) / seq_lens
+                            mb_loss = (seq_pg + args.kl_beta * seq_kl).sum() / float(n_act)
+                            ep_pg += float(seq_pg.sum().item())
+                            ep_kl += float(seq_kl.sum().item())
+                        else:
+                            mb_loss = ((pg_tok + args.kl_beta * kl_tok) * cmask).sum() / total_tok
+                            ep_pg += float((pg_tok * cmask).sum().item())
+                            ep_kl += float((kl_tok * cmask).sum().item())
                         mb_loss.backward()
 
-                        ep_pg += float((pg_tok * cmask).sum().item())
-                        ep_kl += float((kl_tok * cmask).sum().item())
-
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
                     optimizer.step()
-                    pg_accum += ep_pg / float(total_tok.item())
-                    kl_accum += ep_kl / float(total_tok.item())
+                    pg_accum += ep_pg / denom_val
+                    kl_accum += ep_kl / denom_val
 
                 scheduler.step()
                 mean_pg_loss = pg_accum / args.ppo_epochs
@@ -441,7 +508,8 @@ def main():
 
             # Clean walltime-guarded resume checkpoint
             elapsed_job = time.time() - job_t0
-            if step % 25 == 0 or step == args.max_steps or elapsed_job >= args.time_budget_sec:
+            must_exit = (elapsed_job >= args.time_budget_sec or _PREEMPT_REQUESTED) and step < args.max_steps
+            if step % 25 == 0 or step == args.max_steps or must_exit:
                 resume_dir.mkdir(parents=True, exist_ok=True)
                 model.save_pretrained(str(resume_dir))
                 torch.save(
@@ -453,9 +521,10 @@ def main():
                     },
                     resume_dir / "resume_state.pt",
                 )
-                if elapsed_job >= args.time_budget_sec and step < args.max_steps:
+                if must_exit:
+                    reason = "PREEMPT SIGNAL" if _PREEMPT_REQUESTED else f"WALLTIME GUARD ({elapsed_job:.0f}s)"
                     print(
-                        f"[WALLTIME GUARD] Reached {elapsed_job:.0f}s at step {step}/{args.max_steps}. "
+                        f"[{reason}] At step {step}/{args.max_steps}. "
                         f"Saved clean resume state to {resume_dir}. Exiting 0 for next chunk.",
                         flush=True,
                     )

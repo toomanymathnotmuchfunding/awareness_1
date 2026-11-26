@@ -111,7 +111,13 @@ def collate_microbatch(
 
 def main():
     parser = argparse.ArgumentParser(description="Token-normalized LoRA SDF training.")
-    parser.add_argument("--arm", choices=["short", "long"], required=True)
+    parser.add_argument("--arm", choices=["short", "long", "neutral"], required=True)
+    parser.add_argument(
+        "--stop-at-step",
+        type=int,
+        default=0,
+        help="Optional early stop step (e.g. 256) while keeping full-dataset cosine LR schedule.",
+    )
     parser.add_argument("--direction", choices=["dir1", "dir2"], required=True)
     parser.add_argument("--step-tokens", type=int, default=16_384)
     parser.add_argument("--microbatch-tokens", type=int, default=4_096)
@@ -145,6 +151,11 @@ def main():
 
     ckpt_root = scratch_dir / "checkpoints" / run_name
     ckpt_root.mkdir(parents=True, exist_ok=True)
+    if args.stop_at_step > 0:
+        target_ckpt = ckpt_root / f"step_{args.stop_at_step:04d}"
+        if (target_ckpt / "adapter_config.json").exists():
+            print(f"[SKIP] {run_name} already reached step {args.stop_at_step} ({target_ckpt} exists).")
+            return
     tables_dir = project_dir / "results" / "tables"
     tables_dir.mkdir(parents=True, exist_ok=True)
     log_path = tables_dir / f"train_log_{run_name}.jsonl"
@@ -336,13 +347,17 @@ def main():
                     f"LR: {cur_lr:.2e} | {record['elapsed_sec']}s"
                 )
 
-            if step_idx % args.save_every_steps == 0 or step_idx == total_steps:
+            hit_stop = args.stop_at_step > 0 and step_idx >= args.stop_at_step
+            if step_idx % args.save_every_steps == 0 or step_idx == total_steps or hit_stop:
                 ckpt_dir = ckpt_root / f"step_{step_idx:04d}"
                 ckpt_dir.mkdir(parents=True, exist_ok=True)
                 model.save_pretrained(str(ckpt_dir))
                 with (ckpt_dir / "checkpoint_meta.json").open("w", encoding="utf-8") as mf:
                     json.dump(record, mf, indent=2)
                 print(f"  -> Saved LoRA checkpoint: {ckpt_dir}")
+            if hit_stop:
+                print(f"=== Reached --stop-at-step={args.stop_at_step} for {run_name}; stopping cleanly. ===")
+                break
 
     print(f"=== Finished Stage 3 training for {run_name} in {time.time() - start_time:.1f}s ===")
 
